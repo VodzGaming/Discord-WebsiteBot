@@ -5,7 +5,9 @@ export const layout = (title, body, opts={}) => {
   const modulesHtml = modulesList.map(m=>`<a class="sb-item" href="${guildId?m.href(guildId):'#'}">${m.name}</a>`).join('\n');
   const dashHref = `/dashboard${guildId?`?guild_id=${guildId}`:''}`;
   const modsHref = `/modules${guildId?`?guild_id=${guildId}`:''}`;
-  const inviteHref = `/invite?perms=8&scopes=bot%20applications.commands${guildId?`&guild_id=${encodeURIComponent(guildId)}`:''}`;
+  const clientIdPublic = process.env.CLIENT_ID || '';
+  const clientParam = (/^\d{16,25}$/.test(String(clientIdPublic||'')) ? `&client_id=${encodeURIComponent(clientIdPublic)}` : '');
+  const inviteHref = `/invite?perms=8&scopes=bot%20applications.commands${guildId?`&guild_id=${encodeURIComponent(guildId)}`:''}${clientParam}`;
   const recommendedPerms = [
     0x00000040, /* Add Reactions */
     0x00000400, /* View Channel */
@@ -16,7 +18,7 @@ export const layout = (title, body, opts={}) => {
     0x00040000, /* Use External Emojis */
     0x10000000  /* Manage Roles */
   ].reduce((a,b)=>a+b,0);
-  const inviteHrefRec = `/invite?perms=${recommendedPerms}&scopes=bot%20applications.commands${guildId?`&guild_id=${encodeURIComponent(guildId)}`:''}`;
+  const inviteHrefRec = `/invite?perms=${recommendedPerms}&scopes=bot%20applications.commands${guildId?`&guild_id=${encodeURIComponent(guildId)}`:''}${clientParam}`;
   return `<!doctype html>
 <html lang="en">
 <head>

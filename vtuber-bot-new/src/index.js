@@ -233,17 +233,33 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 // Invite (with optional guild locking)
 app.get('/invite', (req, res) => {
   const overrideId = (req.query.client_id || '').toString().trim();
-  const clientId = overrideId || process.env.OAUTH_CLIENT_ID || process.env.CLIENT_ID;
+  // Try runtime-derived ID from the logged-in client as a fallback
+  const runtimeId = (client?.application?.id) || (client?.user?.id) || '';
+  // Prefer CLIENT_ID over OAUTH_CLIENT_ID (users sometimes put perms=8 in OAUTH_CLIENT_ID by mistake)
+  const envClient = process.env.CLIENT_ID || process.env.OAUTH_CLIENT_ID || '';
+  const candidates = [overrideId, envClient, runtimeId].filter(Boolean);
+  const isValidId = (s) => !!String(s).match(/^\d{16,25}$/);
+  const clientId = candidates.find(isValidId) || '';
   const perms = (req.query.perms || '268438544').toString();
   const scopes = (req.query.scopes || 'bot%20applications.commands').toString();
   const gid = req.query.guild_id ? `&guild_id=${encodeURIComponent(req.query.guild_id)}&disable_guild_select=true` : '';
+  if (!clientId) {
+    return res.status(400).type('html').send(`
+      <div style="font-family:system-ui,Segoe UI,Arial;padding:16px;background:#0b0f17;color:#e5e7eb">
+        <h2>Invite Error</h2>
+        <div>Missing or invalid client_id. Set CLIENT_ID in your .env to your Discord Application ID.</div>
+        <div style="margin-top:8px"><a href="/invite?debug=1">Open Debug</a></div>
+      </div>
+    `);
+  }
   const url = `https://discord.com/api/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&permissions=${encodeURIComponent(perms)}&scope=${scopes}${gid}`;
   if (String(req.query.debug||'0')==='1'){
     return res.type('html').send(`
       <div style="font-family:system-ui,Segoe UI,Arial;padding:16px;background:#0b0f17;color:#e5e7eb">
         <h2>Invite Link (debug)</h2>
         <div>Using client_id: <code>${clientId}</code></div>
-        <div>From env: OAUTH_CLIENT_ID=<code>${process.env.OAUTH_CLIENT_ID||''}</code>, CLIENT_ID=<code>${process.env.CLIENT_ID||''}</code></div>
+        <div>From env: CLIENT_ID=<code>${process.env.CLIENT_ID||''}</code>, OAUTH_CLIENT_ID=<code>${process.env.OAUTH_CLIENT_ID||''}</code></div>
+        <div>Runtime: application.id=<code>${client?.application?.id || ''}</code>, user.id=<code>${client?.user?.id || ''}</code></div>
         <div>Permissions: <code>${perms}</code></div>
         <div>Scopes: <code>${decodeURIComponent(scopes)}</code></div>
         <div style="margin-top:8px"><a href="${url}">Open Invite</a></div>
