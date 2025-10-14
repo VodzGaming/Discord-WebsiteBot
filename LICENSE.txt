@@ -1,0 +1,7 @@
+Copyright (c) 2025 Veldaric. All rights reserved.
+
+This software is proprietary and confidential. Unauthorized use, copying,
+modification, distribution, or resale is prohibited without explicit
+written permission from the copyright holder.
+
+For commercial licensing, contact: eternity.dragon1@gmail.com
