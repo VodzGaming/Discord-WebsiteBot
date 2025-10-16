@@ -191,6 +191,7 @@ export const layout = (title, body, opts={}) => {
         <a class="btn-outline" href="/logout">Log out</a>
       </nav>
     </div>
+    ${guildId ? `<div class="wrap" style="padding-top:0;padding-bottom:10px"><div class="muted" style="font-size:12px">If reaction roles aren\'t working, re-invite with Manage Roles using <a href="${inviteHrefRec}">Recommended Invite</a> and move the bot\'s role above target roles.</div></div>` : ''}
   </header>
 
   <div class="main-layout">

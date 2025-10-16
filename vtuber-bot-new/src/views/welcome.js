@@ -138,7 +138,8 @@ export function renderWelcomeSettings({ guild, guildId, textChannels, settings, 
             <span class="knob"></span>
           </label>
         </div>
-        <button class="btn" type="button" id="header-publish">Publish</button>
+  <button class="btn" type="button" id="header-publish">Publish</button>
+  <button class="btn" type="button" id="header-test-welcome">Send test</button>
         <a class="btn" href="/dashboard?guild_id=${guildId}">Back</a>
       </div>
     </div>
@@ -268,6 +269,7 @@ export function renderWelcomeSettings({ guild, guildId, textChannels, settings, 
               (function(){
                 const btn = document.getElementById('header-publish');
                 const main = document.getElementById('main-welcome-form');
+                const testBtn = document.getElementById('header-test-welcome');
                 const headerEnabled = document.getElementById('header-enabled');
                 const messageCard = document.getElementById('message-card');
                 const embedCard = document.getElementById('embed-card');
@@ -430,6 +432,24 @@ export function renderWelcomeSettings({ guild, guildId, textChannels, settings, 
                 // Update preview on main embed inputs typing
                 function bindInput(id){ const el = document.getElementById(id); if(el){ el.addEventListener('input', renderEmbedPreview);} }
                 ['emb-title','emb-title-url','emb-description','emb-author-name','emb-author-icon','emb-thumbnail','emb-image','emb-footer-text','emb-footer-icon'].forEach(bindInput);
+
+                if (testBtn) {
+                  testBtn.addEventListener('click', async ()=>{
+                    // Ensure the selected channel is saved so the test has a target
+                    try {
+                      const form = new FormData(main);
+                      // quick save minimal fields (channel_id, message_type, message_text, embed_json)
+                      const body = new URLSearchParams();
+                      ['channel_id','message_type','message_text','embed_json','bot_nickname'].forEach(k=>{ if(form.get(k)!=null) body.set(k, String(form.get(k)||'')); });
+                      await fetch(main.action, { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded', 'X-Requested-With':'XMLHttpRequest' }, body });
+                    } catch(e) {}
+                    try{
+                      const resp = await fetch('/dashboard/guild/${guildId}/welcome/test', { method:'POST', headers:{ 'X-Requested-With':'XMLHttpRequest' } });
+                      if(!resp.ok){ const t = await resp.text(); throw new Error(t||('HTTP '+resp.status)); }
+                      alert('Test welcome sent to the configured channel.');
+                    }catch(e){ alert(e?.message||'Failed to send test'); }
+                  });
+                }
 
                 function fieldRow(data){
                   const wrap = document.createElement('div');

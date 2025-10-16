@@ -4,12 +4,7 @@ export function renderRolesPage({ guild, textChannels=[], roleList=[], menus=[],
   const esc = (s='') => String(s).replace(/[&<>"]/g, t=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[t]));
   const gname = guild ? esc(guild.name) : 'Server';
 
-  const menusHtml = (menus&&menus.length) ? menus.map(m=>{
-    const ch = textChannels.find(c=>c.id===m.channel_id);
-    const chName = ch ? '#'+ch.name : '#'+(m.channel_id||'unknown');
-    return `<div class="menu-row"><div><b>${esc(chName)}</b> · <span class="muted">message ${esc(m.message_id)}</span></div>
-      <div class="muted">Roles: ${(m.roles||[]).map(r=> '@'+esc(r.label || (roleList.find(x=>x.id===r.role_id)?.name || r.role_id))).join(', ') || '(none)'} </div></div>`;
-  }).join('') : '<div class="muted">No menus created yet.</div>';
+  const menusLink = `<a class="btn-small" href="/dashboard/guild/${guild?guild.id:''}/roles/menus">Open Reaction Menus</a>`;
 
   const body = `
     <style>
@@ -46,10 +41,11 @@ export function renderRolesPage({ guild, textChannels=[], roleList=[], menus=[],
     <div class="settings-grid">
       <div class="sidebar">
         <button class="btn-small" id="new-message">+ New Message</button>
-        <div style="margin-top:12px" class="muted">Existing Menus</div>
-        <div style="margin-top:6px">${menusHtml}</div>
+        <div style="margin-top:12px">${menusLink}</div>
       </div>
       <div>
+
+      <script>(function(){ /* sidebar now only has link, no inline actions */ })();</script>
         <div class="card">
           <div class="section-title">Message Settings</div>
           <div class="field"><label>Name</label><input id="rr-name" type="text" placeholder="Give it a unique name"/></div>
@@ -59,6 +55,11 @@ export function renderRolesPage({ guild, textChannels=[], roleList=[], menus=[],
             <div class="field" style="min-width:180px"><label>Selection Type</label><div class="tabs" id="sel-type-tabs"><button class="tab active" data-type="reactions">Reactions</button><button class="tab" data-type="buttons">Buttons</button><button class="tab" data-type="dropdowns">Dropdowns</button></div></div>
           </div>
           <div id="embed-builder" class="field" style="display:none"><label>Embed Title</label><input id="rr-title" type="text" placeholder="Title"/><label style="margin-top:6px">Embed JSON (optional)</label><textarea id="rr-embed" placeholder='{"description":"React to get roles"}' style="min-height:110px"></textarea></div>
+          <div id="existing-builder" class="field" style="display:none">
+            <label>Message Link or ID</label>
+            <input id="rr-existing-id" type="text" placeholder="https://discord.com/channels/<guild>/<channel>/<message> or message ID"/>
+            <div class="muted" style="margin-top:6px">Note: Existing message works only with Selection Type = Reactions. Discord does not allow adding buttons/dropdowns to other users' messages.</div>
+          </div>
         </div>
 
         <div class="card" style="margin-top:12px">
@@ -270,7 +271,10 @@ export function renderRolesPage({ guild, textChannels=[], roleList=[], menus=[],
           wrap.querySelectorAll('.tab').forEach(b=> b.addEventListener('click', ()=>{ wrap.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); b.classList.add('active'); current=b.dataset.type; onChange&&onChange(current); }));
           return { get:()=>current };
         }
-        const msgTabs = setupTabs('msg-type-tabs', (t)=>{ document.getElementById('embed-builder').style.display = (t==='embed')? 'block':'none'; });
+        const msgTabs = setupTabs('msg-type-tabs', (t)=>{
+          document.getElementById('embed-builder').style.display = (t==='embed')? 'block':'none';
+          document.getElementById('existing-builder').style.display = (t==='existing')? 'block':'none';
+        });
         const selTabs = setupTabs('sel-type-tabs');
 
         const statusEl = document.getElementById('rr-status');
@@ -303,6 +307,12 @@ export function renderRolesPage({ guild, textChannels=[], roleList=[], menus=[],
             body.set('name', name); body.set('message_type', message_type); body.set('selection_type', selection_type);
             body.set('embed_json', embed_json); body.set('allow_multi', allow_multi); body.set('reverse_mode', reverse_mode);
             body.set('allowed_roles', allowed_roles); body.set('ignored_roles', ignored_roles);
+            if(message_type==='existing'){
+              const existing = document.getElementById('rr-existing-id').value.trim();
+              if(!existing){ setStatus('Provide a message link or ID for Existing Message.', true); return; }
+              body.set('existing_message_id', existing);
+              if(selection_type!=='reactions'){ setStatus('Existing Message only supports Reactions selection type.', true); return; }
+            }
             const resp = await fetch('/dashboard/guild/${guild?guild.id:''}/roles/menu', { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded', 'X-Requested-With':'XMLHttpRequest' }, body });
             if(!resp.ok){ const t=await resp.text(); throw new Error(t||('HTTP '+resp.status)); }
             setStatus('Published!', false);

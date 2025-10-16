@@ -4,12 +4,20 @@ import SQLiteStoreFactory from 'connect-sqlite3';
 const SQLiteStore = SQLiteStoreFactory(session);
 
 export function setupAuth(app){
+  const isDev = process.env.DEV_MODE === '1';
+  const baseUrl = process.env.PUBLIC_BASE_URL || '';
+  const isHttps = /^https:\/\//i.test(baseUrl);
   app.use(session({
     store: new SQLiteStore({ db: 'sessions.sqlite', dir: '.' }),
     secret: process.env.SESSION_SECRET || 'dev-secret',
     resave: false,
     saveUninitialized: false,
-    cookie: { maxAge: 1000*60*60*24*7 }
+    cookie: {
+      maxAge: 1000*60*60*24*7,
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: !isDev && isHttps
+    }
   }));
 
   function getBase(req){

@@ -1,10 +1,14 @@
 import 'dotenv/config';
+console.log('[boot] index.js start');
 import express from 'express';
-import { Client, GatewayIntentBits, REST, Routes, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, PermissionsBitField, Partials } from 'discord.js';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import { Client, GatewayIntentBits, REST, Routes, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, PermissionsBitField, Partials, StringSelectMenuBuilder } from 'discord.js';
 
 // Local modules
 import { setupAuth, requireLogin, userCanManageGuild } from './lib/auth.js';
-import { initDb, db, getModuleStates, setModuleState, addWebLog, getWebLogsByType, getWebLogsCountByType, backfillWebLogTypes, getWebLogsForGuild, getBotSettings, setBotSettings, getManagerRoles, setManagerRoles } from './lib/db.js';
+import { initDb, db, getModuleStates, setModuleState, isModuleEnabled, addWebLog, getWebLogsByType, getWebLogsCountByType, backfillWebLogTypes, getWebLogsForGuild, getBotSettings, setBotSettings, getManagerRoles, setManagerRoles } from './lib/db.js';
+import { initMySql, mysqlEnabled } from './lib/mysql.js';
 import { commandData } from './lib/commands.js';
 import { handleInteractions } from './lib/interactions.js';
 import { startLiveWatchers, webhookRouter } from './live/watchers.js';
@@ -22,8 +26,10 @@ import { renderWelcomeChannel } from './views/welcomeChannel.js';
 import { renderHome } from './views/home.js';
 import { renderLogs } from './views/logs.js';
 import { renderCommands } from './views/commands.js';
-import { renderRolesPage } from './views/roles.js';
-import { addReactionMenu, getReactionMenus } from './lib/db.js';
+// Roles page migrated to EJS template (src/templates/roles.ejs)
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { addReactionMenu, getReactionMenus, deleteReactionMenu, getReactionMenuById } from './lib/db.js';
 
 
 // --- Discord client ---
@@ -38,6 +44,8 @@ export const client = new Client({
 });
 
 await initDb();
+console.log('[boot] initDb done');
+// Defer MySQL initialization until after the web server is listening so startup isn't blocked
 
 // Global process diagnostics to catch silent exits/errors
 process.on('uncaughtException', (err) => {
@@ -71,12 +79,52 @@ client.once('clientReady', async () => {
 
 client.on('interactionCreate', handleInteractions);
 
+// When the bot is added to a new guild, verify required permissions and guide admins immediately
+client.on('guildCreate', async (guild) => {
+  try{
+    const me = guild.members?.me || await guild.members.fetchMe().catch(()=>null);
+    if(!me) return;
+    const hasManageRoles = me.permissions.has(PermissionsBitField.Flags.ManageRoles);
+    if(hasManageRoles) return; // we're good
+    // Craft a reinvite URL with Manage Roles (and bot commands) locked to this guild
+    const clientId = process.env.CLIENT_ID || client?.application?.id || client?.user?.id || '';
+    const scopes = 'bot%20applications.commands';
+    const recommendedPerms = (
+      0x00000040 + /* Add Reactions */
+      0x00000400 + /* View Channel */
+      0x00000800 + /* Send Messages */
+      0x00004000 + /* Embed Links */
+      0x00008000 + /* Attach Files */
+      0x00010000 + /* Read Message History */
+      0x00040000 + /* Use External Emojis */
+      0x10000000   /* Manage Roles */
+    );
+    const inviteUrl = clientId ? `https://discord.com/api/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&permissions=${recommendedPerms}&scope=${scopes}&guild_id=${encodeURIComponent(guild.id)}&disable_guild_select=true` : null;
+    const adminUrl = clientId ? `https://discord.com/api/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&permissions=8&scope=${scopes}&guild_id=${encodeURIComponent(guild.id)}&disable_guild_select=true` : null;
+    // Pick a channel to notify (system channel preferred)
+    let ch = guild.systemChannel || null;
+    if(!ch){ try{ await guild.channels.fetch(); }catch(_){}
+      ch = guild.channels.cache.find(c=> c && c.type===0 && c.permissionsFor(me)?.has(PermissionsBitField.Flags.SendMessages));
+    }
+    if(ch && 'send' in ch){
+      const lines = [
+        `Hi! I need the Manage Roles permission to assign reaction roles.`,
+        inviteUrl ? `Fix it in one click: <${inviteUrl}>` : `Fix it by re-inviting me with Manage Roles enabled.`,
+        `Alternatively, use Administrator: ${adminUrl ? `<${adminUrl}>` : '(invite with perms=8)'} `,
+        `After that, drag my highest role above the roles I should assign (Server Settings → Roles).`
+      ];
+      try{ await ch.send(lines.join('\n')); }catch(_){ }
+    }
+  }catch(_){ }
+});
+
 // Reaction role handlers (emoji based)
 client.on('messageReactionAdd', async (reaction, user) => {
   try{
     if(user?.bot) return;
     const message = reaction.message?.partial ? await reaction.message.fetch() : reaction.message;
     const guild = message?.guild; if(!guild) return;
+    if(!isModuleEnabled(guild.id, 'roles')) return; // module disabled
     const menu = getReactionMenuByMessageId(message.id);
     if(!menu) return;
     const emo = reaction.emoji?.id ? reaction.emoji.id : reaction.emoji?.name;
@@ -89,6 +137,19 @@ client.on('messageReactionAdd', async (reaction, user) => {
   if(!entry) return;
     const member = await guild.members.fetch(user.id).catch(()=>null);
     if(!member) return;
+    // allowed/ignored role enforcement
+    try{
+      const allowList = String(menu.allowed_roles||'').split(',').map(s=>s.trim()).filter(Boolean);
+      const ignoreList = String(menu.ignored_roles||'').split(',').map(s=>s.trim()).filter(Boolean);
+      if(ignoreList.length && ignoreList.some(id=> member.roles.cache.has(id))){
+        try{ await reaction.users.remove(user.id).catch(()=>{}); }catch(_){ }
+        return;
+      }
+      if(allowList.length && !allowList.some(id=> member.roles.cache.has(id))){
+        try{ await reaction.users.remove(user.id).catch(()=>{}); }catch(_){ }
+        return;
+      }
+    }catch(_){ }
     // If allow_multi is off, remove other roles from same menu first
     try{
       if(menu && !menu.allow_multi){
@@ -98,7 +159,27 @@ client.on('messageReactionAdd', async (reaction, user) => {
         }
       }
     }catch(_){ /* ignore */ }
-    await member.roles.add(entry.role_id).catch(async (err)=>{
+    // Permission and hierarchy checks
+    try{
+      const me = guild.members.me || await guild.members.fetchMe();
+      const role = guild.roles.cache.get(String(entry.role_id));
+      if(!role) return;
+      if(!me.permissions.has(PermissionsBitField.Flags.ManageRoles)){
+        try{ addWebLog({ guild_id: guild.id, user_id: user.id, username: user.username, action: `Cannot assign @${role.name}: Missing Manage Roles permission`, action_type: 'dashboard' }); }catch(_){ }
+        try{ await reaction.users.remove(user.id).catch(()=>{}); }catch(_){ }
+        return;
+      }
+      if(role.comparePositionTo(me.roles.highest) >= 0){
+        try{ addWebLog({ guild_id: guild.id, user_id: user.id, username: user.username, action: `Cannot assign @${role.name}: Role is above bot's highest role`, action_type: 'dashboard' }); }catch(_){ }
+        try{ await reaction.users.remove(user.id).catch(()=>{}); }catch(_){ }
+        return;
+      }
+    }catch(_){ }
+    // reverse_mode handling: if enabled, invert add/remove behavior
+    const doAdd = !menu.reverse_mode;
+    const doRemove = menu.reverse_mode;
+    const op = doAdd ? 'add' : 'remove';
+    await member.roles[op](entry.role_id).catch(async (err)=>{
       try{ addWebLog({ guild_id: guild.id, user_id: user.id, username: user.username, action: `Reaction add failed for role ${entry.role_id}: ${err?.message||'Unknown'}`, action_type: 'dashboard' }); }catch(_){ }
     });
   }catch(e){ /* ignore */ }
@@ -108,6 +189,7 @@ client.on('messageReactionRemove', async (reaction, user) => {
     if(user?.bot) return;
     const message = reaction.message?.partial ? await reaction.message.fetch() : reaction.message;
     const guild = message?.guild; if(!guild) return;
+    if(!isModuleEnabled(guild.id, 'roles')) return; // module disabled
     const menu = getReactionMenuByMessageId(message.id);
     if(!menu) return;
     const emo = reaction.emoji?.id ? reaction.emoji.id : reaction.emoji?.name;
@@ -119,7 +201,19 @@ client.on('messageReactionRemove', async (reaction, user) => {
     if(!entry) return;
     const member = await guild.members.fetch(user.id).catch(()=>null);
     if(!member) return;
-    await member.roles.remove(entry.role_id).catch(async (err)=>{
+    // Permission and hierarchy checks (best-effort)
+    try{
+      const me = guild.members.me || await guild.members.fetchMe();
+      const role = guild.roles.cache.get(String(entry.role_id));
+      if(!role) return;
+      if(!me.permissions.has(PermissionsBitField.Flags.ManageRoles)) return;
+      if(role.comparePositionTo(me.roles.highest) >= 0) return;
+    }catch(_){ }
+    // reverse_mode handling: if enabled, invert add/remove behavior
+    const doAdd = menu.reverse_mode;
+    const doRemove = !menu.reverse_mode;
+    const op = doAdd ? 'add' : 'remove';
+    await member.roles[op](entry.role_id).catch(async (err)=>{
       try{ addWebLog({ guild_id: guild.id, user_id: user.id, username: user.username, action: `Reaction remove failed for role ${entry.role_id}: ${err?.message||'Unknown'}`, action_type: 'dashboard' }); }catch(_){ }
     });
   }catch(e){ /* ignore */ }
@@ -213,11 +307,37 @@ client.on('guildMemberAdd', async (member) => {
 
 // --- Express app ---
 const app = express();
+console.log('[boot] express app created');
+// Trust proxy config: avoid permissive 'true' which breaks express-rate-limit.
+// Default to 'loopback' (safe for local dev and cloudflared which binds to 127.0.0.1).
+// You can override via env TRUST_PROXY (e.g., 'uniquelocal', '127.0.0.1', or a subnet).
+const TRUST_PROXY = process.env.TRUST_PROXY || 'loopback';
+app.set('trust proxy', TRUST_PROXY);
+// Secure headers (disable CSP here to avoid breaking inline scripts; can be tuned later)
+app.use(helmet({ contentSecurityPolicy: false }));
 // Increase limits to allow base64 canvas images from the banner builder
 app.use(express.json({ limit: '3mb' }));
 app.use(express.urlencoded({ extended: true, limit: '3mb' }));
 
+// Setup EJS templating for HTML-like views
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.set('views', path.join(__dirname, 'templates'));
+app.set('view engine', 'ejs');
+
+// Rate limiting: generous defaults; adjust as needed
+// Apply rate limits (after trust proxy is set)
+const dashboardLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 200,            // 200 req/min per IP
+  standardHeaders: true,
+  legacyHeaders: false
+});
+const authLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
+
 setupAuth(app);
+// Throttle typical auth endpoints to reduce abuse
+app.use(['/login', '/auth', '/oauth', '/callback', '/auth/discord', '/auth/discord/callback'], authLimiter);
 app.use('/webhooks', webhookRouter);
 
 // Root
@@ -270,6 +390,9 @@ app.get('/invite', (req, res) => {
 });
 
 // Servers list (server-select)
+// Apply dashboard limiter to dashboard-related sections
+app.use(['/dashboard', '/modules', '/servers', '/logs'], dashboardLimiter);
+
 app.get('/servers', requireLogin, (req, res) => {
   const manageable = req.session.guildsManageable || [];
   return res.type('html').send(renderServers({ user: req.session.user, manageable }));
@@ -311,9 +434,87 @@ app.get('/dashboard/guild/:guildId/roles', requireLogin, async (req, res) => {
   if(guild){ try{ await guild.roles.fetch(); await guild.channels.fetch(); await guild.emojis.fetch(); }catch(e){} }
   const roleList = guild ? Array.from(guild.roles.cache.values()).filter(r=>!r.managed && r.id!==guild.id).sort((a,b)=> a.position-b.position).map(r=>({ id:r.id, name:r.name })) : [];
   const textChannels = guild ? Array.from(guild.channels.cache.values()).filter(c=> c && (c.type===0 || c.type==='GUILD_TEXT')).map(c=>({ id:c.id, name:c.name })) : [];
-  const emojis = guild ? Array.from(guild.emojis.cache.values()).map(e=>({ id: e.id, name: e.name || '', animated: !!e.animated, url: (e.url || (typeof e.imageURL==='function'? e.imageURL() : null) || ''), mention: (e.animated ? `<a:${e.name}:${e.id}>` : `<:${e.name}:${e.id}>`) })) : [];
+  const emojis = guild ? Array.from(guild.emojis.cache.values()).map(e=>({ id: e.id, name: e.name || '', animated: !!e.animated, url: (typeof e.imageURL==='function' ? e.imageURL() : ''), mention: (e.animated ? `<a:${e.name}:${e.id}>` : `<:${e.name}:${e.id}>`) })) : [];
   const menus = getReactionMenus(guildId);
-  return res.type('html').send(renderRolesPage({ guild, textChannels, roleList, menus, emojis }));
+  return res.render('roles', { guild, textChannels, roleList, menus, emojis });
+});
+
+// Dedicated Reaction Menus management page
+app.get('/dashboard/guild/:guildId/roles/menus', requireLogin, async (req, res) => {
+  const { guildId } = req.params;
+  if (!userCanManageGuild(req, guildId)) return res.status(403).send('Forbidden');
+  const guild = await client.guilds.fetch(guildId).catch(()=>null);
+  if(guild){ try{ await guild.roles.fetch(); await guild.channels.fetch(); }catch(e){} }
+  const textChannels = guild ? Array.from(guild.channels.cache.values()).filter(c=> c && (c.type===0 || c.type==='GUILD_TEXT')).map(c=>({ id:c.id, name:c.name })) : [];
+  const menus = getReactionMenus(guildId);
+  // Best-effort: annotate existence
+  for(const m of menus){
+    try{
+      const ch = m.channel_id ? await guild.channels.fetch(m.channel_id).catch(()=>null) : null;
+      let exists = false;
+      if(ch && 'messages' in ch && ch.messages){
+        const msg = await ch.messages.fetch(m.message_id).catch(()=>null);
+        exists = !!msg;
+      }
+      m.exists = exists;
+    }catch(e){ m._exists = null; }
+  }
+  return res.render('rolesMenus', { guild, guildId, textChannels, menus });
+});
+
+// Re-sync reactions for a menu: (re)add configured reactions to the target message
+app.post('/dashboard/guild/:guildId/roles/menu/:menuId/sync', requireLogin, async (req, res) => {
+  const { guildId, menuId } = req.params;
+  if (!userCanManageGuild(req, guildId)) return res.status(403).send('Forbidden');
+  try{
+    const menu = getReactionMenuById(Number(menuId));
+    if(!menu || String(menu.guild_id)!==String(guildId)) return res.status(404).send('Menu not found');
+    const guild = await client.guilds.fetch(guildId).catch(()=>null);
+    if(!guild) return res.status(400).send('Guild not found');
+    const ch = menu.channel_id ? await guild.channels.fetch(menu.channel_id).catch(()=>null) : null;
+    if(!ch || !('messages' in ch)) return res.status(400).send('Channel not accessible');
+    const msg = await ch.messages.fetch(menu.message_id).catch(()=>null);
+    if(!msg) return res.status(404).send('Message not found');
+    let added = 0;
+    for(const r of (menu.roles||[])){
+      if(!r.emoji) continue;
+      try{ await msg.react(r.emoji); added++; }catch(_){ }
+    }
+    try{ addWebLog({ guild_id: guildId, user_id: req.session?.user?.id, username: req.session?.user?.username, action: `Synced reactions on menu ${menuId} (${added} attempts)`, action_type: 'dashboard' }); }catch(_){ }
+    if (req.headers['x-requested-with'] === 'XMLHttpRequest') return res.json({ ok:true, added });
+    return res.redirect(`/dashboard/guild/${guildId}/roles/menus`);
+  }catch(e){
+    return res.status(400).send('Failed to sync: ' + (e?.message || 'Unknown error'));
+  }
+});
+
+// Bulk delete selected menus
+app.post('/dashboard/guild/:guildId/roles/menus/bulk_delete', requireLogin, async (req, res) => {
+  const { guildId } = req.params;
+  if (!userCanManageGuild(req, guildId)) return res.status(403).send('Forbidden');
+  try{
+    const ids = (Array.isArray(req.body.ids) ? req.body.ids : String(req.body.ids||'').split(',')).map(s=> Number(String(s).trim())).filter(n=> Number.isFinite(n) && n>0);
+    if(!ids.length) return res.status(400).send('No ids provided');
+    const guild = await client.guilds.fetch(guildId).catch(()=>null);
+    let deleted = 0; let msgDeleted = 0;
+    for(const id of ids){
+      const m = getReactionMenuById(id);
+      if(!m || String(m.guild_id)!==String(guildId)) continue;
+      try{
+        const ch = m.channel_id ? await guild?.channels.fetch(m.channel_id).catch(()=>null) : null;
+        if (ch && 'messages' in ch && ch.messages){
+          const msg = await ch.messages.fetch(m.message_id).catch(()=>null);
+          if (msg){ await msg.delete().catch(()=>{}); msgDeleted++; }
+        }
+      }catch(_){ }
+      deleteReactionMenu(id); deleted++;
+    }
+    try{ addWebLog({ guild_id: guildId, user_id: req.session?.user?.id, username: req.session?.user?.username, action: `Bulk deleted ${deleted} reaction role menus (${msgDeleted} messages)`, action_type: 'dashboard' }); }catch(_){ }
+    if (req.headers['x-requested-with'] === 'XMLHttpRequest') return res.json({ ok:true, deleted, msgDeleted });
+    return res.redirect(`/dashboard/guild/${guildId}/roles/menus`);
+  }catch(e){
+    return res.status(400).send('Failed to bulk delete: ' + (e?.message || 'Unknown error'));
+  }
 });
 
 // Create a reaction roles menu
@@ -331,7 +532,8 @@ app.post('/dashboard/guild/:guildId/roles/menu', requireLogin, async (req, res) 
     const selection_type = ['reactions','buttons','dropdowns'].includes(selection_type_raw) ? selection_type_raw : 'reactions';
     const message_type_raw = (req.body.message_type||'plain').toString().toLowerCase();
     const message_type = ['plain','embed','existing'].includes(message_type_raw) ? message_type_raw : 'plain';
-    const embed_json = (req.body.embed_json||'').toString() || null;
+  const embed_json = (req.body.embed_json||'').toString() || null;
+  const existing_message_raw = (req.body.existing_message_id||'').toString().trim();
     const allow_multi = (req.body.allow_multi==='1' || req.body.allow_multi==='true' || req.body.allow_multi===1) ? 1 : 0;
     const reverse_mode = (req.body.reverse_mode==='1' || req.body.reverse_mode==='true' || req.body.reverse_mode===1) ? 1 : 0;
     const allowed_roles = (req.body.allowed_roles||'').toString().trim() || null;
@@ -349,12 +551,11 @@ app.post('/dashboard/guild/:guildId/roles/menu', requireLogin, async (req, res) 
     };
     // Extract optional emoji fields (emoji_<roleId>) mapping
     const rolesWithMeta = roleIds.map((rid)=>({ role_id: String(rid), emoji: normEmoji((req.body['emoji_'+String(rid)] || '').toString()) }));
-    const ch = await guild.channels.fetch(channelId).catch(()=>null);
-    if(!ch || !('send' in ch)) throw new Error('Invalid channel');
+  const ch = await guild.channels.fetch(channelId).catch(()=>null);
+  if(!ch) throw new Error('Invalid channel');
     // Build message payload
     const components = [];
-    if (selection_type === 'buttons' || selection_type === 'dropdowns') {
-      // For now, only implement buttons; dropdowns fall back to buttons (future enhancement)
+    if (selection_type === 'buttons') {
       const row = new ActionRowBuilder();
       for(const rid of roleIds.slice(0,5)){
         const r = guild.roles.cache.get(String(rid));
@@ -363,9 +564,20 @@ app.post('/dashboard/guild/:guildId/roles/menu', requireLogin, async (req, res) 
         row.addComponents(btn);
       }
       if (row.components?.length) components.push(row);
+    } else if (selection_type === 'dropdowns') {
+      const opts = [];
+      for(const rid of roleIds){
+        const r = guild.roles.cache.get(String(rid));
+        if(!r) continue;
+        opts.push({ label: '@'+r.name, value: r.id });
+      }
+      const max = allow_multi ? Math.min(opts.length || 1, 25) : 1;
+  const select = new StringSelectMenuBuilder().setCustomId('rrs').setPlaceholder('Choose roles...').setMinValues(0).setMaxValues(max).addOptions(opts.slice(0,25));
+      const row = new ActionRowBuilder().addComponents(select);
+      components.push(row);
     }
-    // Content/embeds based on message_type
-    let payload = { content: '**'+title+'**' };
+  // Content/embeds based on message_type
+  let payload = { content: '**'+title+'**' };
     if (message_type === 'embed') {
       try{
         const ej = embed_json ? JSON.parse(embed_json) : {};
@@ -388,19 +600,122 @@ app.post('/dashboard/guild/:guildId/roles/menu', requireLogin, async (req, res) 
         payload = { embeds: [e] };
       }catch(_){ payload = { content: '**'+title+'**' }; }
     }
-    if (components.length) payload.components = components;
-    const msg = await ch.send(payload);
-    // Add reactions for emoji-based role menus (if any emoji provided)
-    for(const r of rolesWithMeta){
-      if(r.emoji){
-        try{ await msg.react(r.emoji); }catch(e){ /* ignore bad emoji */ }
+  let messageIdCreated = null;
+  let storedChannelId = ch.id;
+    if (message_type === 'existing') {
+      // Only support reactions for existing message
+      if (selection_type !== 'reactions') throw new Error('Existing message only supports Reactions selection type');
+      // Resolve message ID from URL or ID
+      const resolveMessageId = (s)=>{
+        const t = String(s||'').trim();
+        let m = t.match(/\/channels\/(\d+)\/(\d+)\/(\d+)/); if(m) return { chId:m[2], msgId:m[3] };
+        if(/^(\d{16,22})$/.test(t)) return { chId: channelId, msgId: t };
+        return null;
+      };
+      const ref = resolveMessageId(existing_message_raw);
+      if(!ref) throw new Error('Invalid existing message link or ID');
+      const targetCh = ref.chId && ref.chId !== channelId ? await guild.channels.fetch(ref.chId).catch(()=>null) : ch;
+      if(!targetCh || !('messages' in targetCh)) throw new Error('Cannot access target message channel');
+      const targetMsg = await targetCh.messages.fetch(ref.msgId).catch(()=>null);
+      if(!targetMsg) throw new Error('Existing message not found');
+      // React with provided emojis
+      for(const r of rolesWithMeta){
+        if(r.emoji){ try{ await targetMsg.react(r.emoji); }catch(_){ } }
+      }
+  messageIdCreated = targetMsg.id;
+  storedChannelId = targetCh.id;
+    } else {
+      if(!('send' in ch)) throw new Error('Invalid text channel');
+      if (components.length) payload.components = components;
+      const msg = await ch.send(payload);
+      messageIdCreated = msg.id;
+      storedChannelId = ch.id;
+      for(const r of rolesWithMeta){
+        if(r.emoji){ try{ await msg.react(r.emoji); }catch(_){ } }
       }
     }
-    addReactionMenu({ guild_id: guildId, channel_id: ch.id, message_id: msg.id, roles: rolesWithMeta, name, selection_type, message_type, title, embed_json, allow_multi, reverse_mode, allowed_roles, ignored_roles });
+    addReactionMenu({ guild_id: guildId, channel_id: storedChannelId, message_id: messageIdCreated, roles: rolesWithMeta, name, selection_type, message_type, title, embed_json, allow_multi, reverse_mode, allowed_roles, ignored_roles });
     try{ addWebLog({ guild_id: guildId, user_id: req.session?.user?.id, username: req.session?.user?.username, action: `Created reaction roles menu in #${ch.name}`, action_type: 'dashboard' }); }catch(e){}
     return res.redirect(`/dashboard/guild/${guildId}/roles`);
   }catch(e){
     return res.status(400).send('Failed to create menu: ' + (e?.message || 'Unknown error'));
+  }
+});
+
+// Delete a reaction roles menu (removes from DB only; does not delete Discord message)
+app.post('/dashboard/guild/:guildId/roles/menu/:menuId/delete', requireLogin, async (req, res) => {
+  const { guildId, menuId } = req.params;
+  if (!userCanManageGuild(req, guildId)) return res.status(403).send('Forbidden');
+  try{
+    const menu = getReactionMenuById(Number(menuId));
+    if(!menu || String(menu.guild_id)!==String(guildId)) return res.status(404).send('Menu not found');
+    // Best-effort: delete the Discord message too
+    try{
+      const guild = await client.guilds.fetch(guildId).catch(()=>null);
+      const ch = menu.channel_id ? await guild?.channels.fetch(menu.channel_id).catch(()=>null) : null;
+      if (ch && 'messages' in ch && ch.messages) {
+        const msg = await ch.messages.fetch(menu.message_id).catch(()=>null);
+        if (msg) await msg.delete().catch(()=>{});
+      }
+    }catch(_){ }
+    deleteReactionMenu(Number(menuId));
+    try{ console.log('[roles] deleted menu', menuId, 'in guild', guildId); }catch(_){ }
+    try{ addWebLog({ guild_id: guildId, user_id: req.session?.user?.id, username: req.session?.user?.username, action: `Deleted reaction roles menu ${menuId}`, action_type: 'dashboard' }); }catch(e){}
+    if (req.headers['x-requested-with'] === 'XMLHttpRequest') return res.json({ ok:true });
+    return res.redirect(`/dashboard/guild/${guildId}/roles`);
+  }catch(e){
+    return res.status(400).send('Failed to delete menu: ' + (e?.message || 'Unknown error'));
+  }
+});
+
+// Fallback delete via link (GET) to support simple anchors/buttons
+app.get('/dashboard/guild/:guildId/roles/menu/:menuId/delete', requireLogin, async (req, res) => {
+  const { guildId, menuId } = req.params;
+  if (!userCanManageGuild(req, guildId)) return res.status(403).send('Forbidden');
+  // Reuse POST logic by calling same code path
+  req.headers['x-requested-with'] = '';
+  try{
+    const menu = getReactionMenuById(Number(menuId));
+    if(menu){
+      try{
+        const guild = await client.guilds.fetch(guildId).catch(()=>null);
+        const ch = menu.channel_id ? await guild?.channels.fetch(menu.channel_id).catch(()=>null) : null;
+        if (ch && 'messages' in ch && ch.messages) {
+          const msg = await ch.messages.fetch(menu.message_id).catch(()=>null);
+          if (msg) await msg.delete().catch(()=>{});
+        }
+      }catch(_){ }
+      deleteReactionMenu(Number(menuId));
+      try{ addWebLog({ guild_id: guildId, user_id: req.session?.user?.id, username: req.session?.user?.username, action: `Deleted reaction roles menu ${menuId} (link)`, action_type: 'dashboard' }); }catch(e){}
+    }
+  }catch(_){ }
+  return res.redirect(`/dashboard/guild/${guildId}/roles/menus`);
+});
+
+// Bulk prune menus whose messages no longer exist
+app.post('/dashboard/guild/:guildId/roles/menus/prune_missing', requireLogin, async (req, res) => {
+  const { guildId } = req.params;
+  if (!userCanManageGuild(req, guildId)) return res.status(403).send('Forbidden');
+  try{
+    const guild = await client.guilds.fetch(guildId).catch(()=>null);
+    const menus = getReactionMenus(guildId);
+    let pruned = 0;
+    for(const m of menus){
+      let exists = false;
+      try{
+        const ch = m.channel_id ? await guild?.channels.fetch(m.channel_id).catch(()=>null) : null;
+        if (ch && 'messages' in ch && ch.messages){
+          const msg = await ch.messages.fetch(m.message_id).catch(()=>null);
+          exists = !!msg;
+        }
+      }catch(_){ exists = false; }
+      if(!exists){ deleteReactionMenu(m.id); pruned++; }
+    }
+    try{ addWebLog({ guild_id: guildId, user_id: req.session?.user?.id, username: req.session?.user?.username, action: `Pruned ${pruned} reaction role menus (missing messages)`, action_type: 'dashboard' }); }catch(e){}
+    if (req.headers['x-requested-with'] === 'XMLHttpRequest') return res.json({ ok:true, pruned });
+    return res.redirect(`/dashboard/guild/${guildId}/roles/menus`);
+  }catch(e){
+    return res.status(400).send('Failed to prune: ' + (e?.message || 'Unknown error'));
   }
 });
 
@@ -935,6 +1250,56 @@ app.post('/dashboard/guild/:guildId/welcome', requireLogin, async (req, res) => 
   return res.redirect(`/dashboard/guild/${guildId}/welcome?saved=1`);
 });
 
+// Welcome: send a quick test to the configured channel without changing settings
+app.post('/dashboard/guild/:guildId/welcome/test', requireLogin, async (req, res) => {
+  const { guildId } = req.params;
+  if (!userCanManageGuild(req, guildId)) return res.status(403).send('Forbidden');
+  try{
+    const row = db.prepare('SELECT * FROM welcome_settings WHERE guild_id=?').get(guildId);
+    if(!row || !row.channel_id) return res.status(400).send('No welcome channel configured');
+    const guild = await client.guilds.fetch(guildId).catch(()=>null);
+    if(!guild) return res.status(400).send('Guild not found');
+    const ch = await client.channels.fetch(row.channel_id).catch(()=>null);
+    if(!ch || !ch.isTextBased || !ch.send) return res.status(400).send('Invalid welcome channel');
+    // Build a lightweight preview message similar to save handler
+    const message_type = row.message_type || 'message';
+    const message_text = row.message_text || '';
+    let embed_json_str = row.embed_json || null;
+    let payload = {};
+    if (message_type === 'message') {
+      payload.content = message_text || ' ';
+    } else if (message_type === 'embed' || message_type === 'embed_text') {
+      const embed = new EmbedBuilder();
+      try { const ej = embed_json_str ? JSON.parse(embed_json_str) : null; if (ej){
+        const trim = (s)=> typeof s==='string' ? s.trim() : s;
+        if (trim(ej.title)) embed.setTitle(trim(ej.title));
+        if (trim(ej.title_url)) embed.setURL(trim(ej.title_url));
+        if (trim(ej.description)) embed.setDescription(trim(ej.description));
+        if (ej.color){ if (typeof ej.color==='string'){ let s=ej.color.trim(); if(/^#?[0-9a-f]{6}$/i.test(s)){ s=s.replace('#',''); embed.setColor(parseInt(s,16)); } else if(/^0x[0-9a-f]{6}$/i.test(s)){ embed.setColor(parseInt(s,16)); } else if(/^[0-9]+$/.test(s)){ embed.setColor(parseInt(s,10)); } } else if (typeof ej.color==='number'){ embed.setColor(ej.color); } }
+        if (trim(ej.author_name) || trim(ej.author_icon)) embed.setAuthor({ name: trim(ej.author_name) || '\u200b', iconURL: trim(ej.author_icon) || undefined });
+        if (trim(ej.thumbnail)) embed.setThumbnail(trim(ej.thumbnail));
+        if (trim(ej.image)) embed.setImage(trim(ej.image));
+        if (trim(ej.footer_text) || trim(ej.footer_icon)) embed.setFooter({ text: trim(ej.footer_text) || '\u200b', iconURL: trim(ej.footer_icon) || undefined });
+        if (Array.isArray(ej.fields)) {
+          const safe = ej.fields.filter(f=>f && f.name && f.value).slice(0,25).map(f=>({ name:String(f.name).slice(0,256), value:String(f.value).slice(0,1024), inline: !!f.inline }));
+          if (safe.length) embed.addFields(safe);
+        }
+      }} catch(e){}
+      if (message_type === 'embed_text' && message_text) payload.content = message_text;
+      if ((embed.data && Object.keys(embed.data).length) || embed.toJSON && Object.keys(embed.toJSON()).length) payload.embeds = [embed];
+      if (!payload.content && !payload.embeds) payload.content = message_text || ' ';
+    } else if (message_type === 'custom_image') {
+      payload.content = '(welcome banner preview)';
+    }
+    await ch.send(payload);
+    try{ addWebLog({ guild_id: guildId, user_id: req.session?.user?.id, username: req.session?.user?.username, action: `Sent test welcome to #${ch.name}` , action_type: 'dashboard' }); }catch(e){}
+    if (req.headers['x-requested-with'] === 'XMLHttpRequest') return res.json({ ok:true });
+    return res.redirect(`/dashboard/guild/${guildId}/welcome?saved=1`);
+  }catch(e){
+    return res.status(400).send('Failed to send test welcome: ' + (e?.message || 'Unknown error'));
+  }
+});
+
 // Welcome Channel — POST (save)
 app.post('/dashboard/guild/:guildId/welcome-channel', requireLogin, async (req, res) => {
   const { guildId } = req.params;
@@ -1024,8 +1389,10 @@ app.post('/dashboard/guild/:guildId/bot/nickname', requireLogin, async (req, res
 
 // --- Start servers (with port fallback) ---
 function startWithFallback() {
+  console.log('[boot] startWithFallback called');
   const first = Number(process.env.PORT || 3000);
   const candidates = [first, 3001, 3002, 3003];
+  const host = process.env.HOST || '127.0.0.1';
   let idx = 0;
   let server;
   const tryNext = () => {
@@ -1034,9 +1401,10 @@ function startWithFallback() {
       console.error('No available ports. Tried:', candidates.join(', '));
       process.exit(1);
     }
+    console.log(`[boot] trying listen on ${host}:${p}`);
     server = app
-      .listen(p, '127.0.0.1', () => {
-        const url = `http://127.0.0.1:${p}`;
+      .listen(p, host, () => {
+        const url = process.env.PUBLIC_BASE_URL || `http://${host}:${p}`;
         console.log(`Dashboard/Webhooks listening on :${p} — ${url}`);
         // Start Discord client features after we have the web server up
         if (process.env.DISCORD_TOKEN) {
@@ -1046,6 +1414,8 @@ function startWithFallback() {
         } else {
           console.log('DISCORD_TOKEN not set — skipping Discord client login and related initializations. Server will run in limited mode.');
         }
+        // Initialize optional MySQL sink now
+        try{ if (mysqlEnabled()) { initMySql().then(()=>console.log('[mysql] initialized')); } }catch(e){ console.warn('[mysql] disabled:', e?.message||e); }
       })
       .on('error', (err) => {
         if (err && err.code === 'EADDRINUSE') {

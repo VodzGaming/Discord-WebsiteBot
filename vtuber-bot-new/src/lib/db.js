@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { mysqlEnabled, initMySql, mysqlInsertWebLog } from './mysql.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -138,7 +139,10 @@ export function initDb(){
 // Web logs: simple table to store dashboard actions
 export function addWebLog({ guild_id=null, user_id=null, username=null, action='', action_type=null }){
   // try to set action_type if provided; fallback to NULL
-  db.prepare(`INSERT INTO web_logs (guild_id, user_id, username, action, action_type, created_at) VALUES (@guild_id,@user_id,@username,@action,@action_type,@created_at)`).run({ guild_id, user_id, username, action, action_type, created_at: Date.now() });
+  const payload = { guild_id, user_id, username, action, action_type, created_at: Date.now() };
+  db.prepare(`INSERT INTO web_logs (guild_id, user_id, username, action, action_type, created_at) VALUES (@guild_id,@user_id,@username,@action,@action_type,@created_at)`).run(payload);
+  // fire-and-forget mirror to MySQL if enabled
+  try{ if (mysqlEnabled()) { mysqlInsertWebLog(payload); } }catch(e){}
 }
 
 // Note: getWebLogs is defined earlier above (kept there). Do not redeclare.
@@ -193,6 +197,14 @@ export function getModuleStates(guildId){
 export function setModuleState(guildId, module, enabled){
   db.prepare(`INSERT INTO module_state (guild_id, module, enabled) VALUES (@guild_id,@module,@enabled)
               ON CONFLICT(guild_id,module) DO UPDATE SET enabled=@enabled`).run({ guild_id: guildId, module, enabled: enabled ? 1 : 0 });
+}
+
+// Quick check for a module toggle (returns boolean)
+export function isModuleEnabled(guildId, module){
+  try{
+    const row = db.prepare('SELECT enabled FROM module_state WHERE guild_id=? AND module=?').get(guildId, module);
+    return !!(row && row.enabled);
+  }catch(e){ return false; }
 }
 
 // ---- Bot settings helpers ----
@@ -264,4 +276,12 @@ export function getReactionMenuByMessageId(message_id){
   if(!menu) return null;
   const roles = db.prepare('SELECT * FROM reaction_menu_roles WHERE menu_id=?').all(menu.id);
   return { ...menu, roles };
+}
+
+// Get a reaction menu by its primary id, including roles
+export function getReactionMenuById(menu_id){
+  const m = db.prepare('SELECT * FROM reaction_menus WHERE id=?').get(menu_id);
+  if(!m) return null;
+  const roles = db.prepare('SELECT * FROM reaction_menu_roles WHERE menu_id=?').all(menu_id);
+  return { ...m, roles };
 }
