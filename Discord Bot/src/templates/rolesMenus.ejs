@@ -1,0 +1,129 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Reaction Menus - <%= (guild && guild.name) || guildId %></title>
+    <style>
+      body{font-family: system-ui, sans-serif; padding:20px; background:#0b1017; color:#e5e7eb}
+      a{ color:#93c5fd }
+      table{width:100%; border-collapse: collapse;}
+      th, td{border:1px solid rgba(255,255,255,.08); padding:8px;}
+      th{background:#12171d; text-align:left;}
+      tr:nth-child(even){ background:#0f131c }
+      .toolbar{display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap;}
+      .btn{ padding:6px 10px; border-radius:8px; background:#1b2130; border:1px solid #2a3142; color:#e5e7eb; cursor:pointer }
+      .toast{position:fixed; right:16px; bottom:16px; background:#222; color:#fff; padding:10px 14px; border-radius:6px; opacity:0; transform:translateY(10px); transition: all .2s ease;}
+      .toast.show{opacity:1; transform:translateY(0);}
+      .filters{display:flex; gap:8px; align-items:center;}
+    </style>
+  </head>
+  <body>
+    <h2>Reaction Role Menus</h2>
+    <div class="toolbar">
+      <form method="POST" action="/dashboard/guild/<%= guildId %>/roles/menus/prune_missing" onsubmit="return confirm('Prune menus whose messages are missing?');">
+        <button type="submit" class="btn">Prune missing messages</button>
+      </form>
+      <a href="/dashboard/guild/<%= guildId %>/roles" class="btn">← Back to Roles Builder</a>
+      <form id="bulkDeleteForm" method="POST" action="/dashboard/guild/<%= guildId %>/roles/menus/bulk_delete" style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+        <button type="button" class="btn" id="selectAll">Select all</button>
+        <button type="button" class="btn" id="clearAll">Clear</button>
+        <input type="hidden" name="ids" id="bulkIds" />
+        <button type="submit" class="btn" onclick="return collectAndConfirm();">Bulk delete</button>
+      </form>
+    </div>
+    <div class="filters">
+      <label>Channel: <select id="fChannel"><option value="">All</option>
+        <% (textChannels||[]).forEach(c=>{ %>
+          <option value="<%= c.id %>">#<%= c.name %></option>
+        <% }) %>
+      </select></label>
+      <label>Status: <select id="fStatus"><option value="">All</option><option value="exists">Exists</option><option value="missing">Missing</option><option value="unknown">Unknown</option></select></label>
+      <label>Search: <input id="fSearch" type="text" placeholder="role, emoji, id..." /></label>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="mastercheck" /></th>
+          <th>ID</th>
+          <th>Type</th>
+          <th>Channel</th>
+          <th>Message</th>
+          <th>Roles</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <% if(!(menus && menus.length)){ %>
+          <tr><td colspan="8" style="text-align:center;color:#9aa3ad;">No menus yet.</td></tr>
+        <% } %>
+        <% (menus||[]).forEach(m=>{ const channelName = (textChannels||[]).find(c=> c.id===m.channel_id)?.name || '#deleted-channel'; const rolesList = (m.roles||[]).map(r=> (r.emoji||'❔') + ' <@&'+r.roleId+'>').join(', '); const link = (m.channel_id && m.message_id) ? `https://discord.com/channels/${guildId}/${m.channel_id}/${m.message_id}` : ''; const status = (m.exists===true ? 'Exists' : (m.exists===false ? 'Deleted/Missing' : 'Unknown')); const statusKey = (m.exists===true ? 'exists' : (m.exists===false ? 'missing' : 'unknown')); %>
+          <tr data-id="<%= m.id %>" data-channel="<%= m.channel_id||'' %>" data-status="<%= statusKey %>" data-search="<%- (rolesList||'').replace(/\"/g,'&quot;') %>">
+            <td><input type="checkbox" class="rowcheck" value="<%= m.id %>" /></td>
+            <td><%= m.id %></td>
+            <td><%= m.type || 'reactions' %></td>
+            <td><%= channelName %></td>
+            <td><% if(link){ %><a href="<%= link %>" target="_blank"><%= m.message_id %></a><% }else{ %>-<% } %></td>
+            <td><%- rolesList || '-' %></td>
+            <td><%= status %></td>
+            <td>
+              <button data-action="sync" data-id="<%= m.id %>" class="btn">Sync</button>
+              <form method="POST" action="/dashboard/guild/<%= guildId %>/roles/menu/<%= m.id %>/delete" onsubmit="return confirm('Delete this menu?');" style="display:inline-block;">
+                <button type="submit" class="btn">Delete</button>
+              </form>
+              <a href="/dashboard/guild/<%= guildId %>/roles/menu/<%= m.id %>/delete" style="margin-left:6px;" class="btn">Link delete</a>
+            </td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    <div class="toast" id="toast"></div>
+    <script>
+      const guildId = '<%- guildId %>';
+      function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 2500); }
+      function collectAndConfirm(){
+        const ids=[...document.querySelectorAll('.rowcheck:checked')].map(i=>i.value);
+        if(!ids.length){ toast('No menus selected.'); return false; }
+        if(!confirm('Bulk delete '+ids.length+' menus?')) return false;
+        document.getElementById('bulkIds').value = ids.join(',');
+        return true;
+      }
+      document.getElementById('selectAll').addEventListener('click',()=>{
+        document.querySelectorAll('.rowcheck').forEach(c=> c.checked=true);
+      });
+      document.getElementById('clearAll').addEventListener('click',()=>{
+        document.querySelectorAll('.rowcheck').forEach(c=> c.checked=false);
+      });
+      document.getElementById('mastercheck').addEventListener('change',(e)=>{
+        const on=e.target.checked; document.querySelectorAll('.rowcheck').forEach(c=> c.checked=on);
+      });
+      function applyFilters(){
+        const ch = document.getElementById('fChannel').value;
+        const st = document.getElementById('fStatus').value;
+        const q = document.getElementById('fSearch').value.toLowerCase();
+        document.querySelectorAll('#rows tr').forEach(tr=>{
+          const okCh = !ch || tr.dataset.channel===ch;
+          const okSt = !st || tr.dataset.status===st;
+          const okQ = !q || (tr.dataset.search||'').toLowerCase().includes(q) || tr.innerText.toLowerCase().includes(q);
+          tr.style.display = (okCh && okSt && okQ) ? '' : 'none';
+        });
+      }
+      ['fChannel','fStatus','fSearch'].forEach(id=>{
+        document.getElementById(id).addEventListener('input', applyFilters);
+        document.getElementById(id).addEventListener('change', applyFilters);
+      });
+      document.querySelectorAll('button[data-action="sync"]').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          const id = btn.dataset.id;
+          btn.disabled = true; btn.textContent = 'Syncing...';
+          try{
+            const r = await fetch('/dashboard/guild/'+guildId+'/roles/menu/' + id + '/sync', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            const j = await r.json().catch(()=>null);
+            if (r.ok) toast('Synced ' + ((j&&j.added) ?? 0) + ' reactions'); else toast('Sync failed: ' + ((j&&j.error) || r.statusText));
+          }catch(e){ toast('Sync failed'); }
+          btn.disabled = false; btn.textContent = 'Sync';
+        });
+      });
+    </script>
+  </body>
+</html>

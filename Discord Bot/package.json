@@ -1,0 +1,30 @@
+{
+  "name": "vtuber-discord-bot-starter",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.16.1",
+    "better-sqlite3": "^9.6.0",
+    "connect-sqlite3": "^0.9.13",
+    "ejs": "^3.1.10",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "expres": "^0.0.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.5.1",
+    "express-session": "^1.17.3",
+    "helmet": "^7.2.0",
+    "mysql2": "^3.11.0",
+    "node-cron": "^3.0.3",
+    "play-dl": "^1.9.7"
+  },
+  "description": "**What you get** - Go‑Live announcements (Twitch + YouTube polling, generic webhook endpoint for anything else) - Reaction roles (button menu) - Ticket system (open/close) - Music player (YouTube URLs/search via play-dl) - Web dashboard with Discord OAuth login (choose a server you manage and configure)",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
