@@ -3,6 +3,7 @@ import { modulesList } from '../lib/modules.js';
 export const layout = (title, body, opts={}) => {
   const guildId = opts.guildId || '';
   const loggedIn = !!opts.loggedIn;
+  const hideSidebar = !!opts.hideSidebar;
   const modulesHtml = modulesList.map(m=>`<a class="sb-item" href="${guildId?m.href(guildId):'#'}">${m.name}</a>`).join('\n');
   const dashHref = `/dashboard${guildId?`?guild_id=${guildId}`:''}`;
   const modsHref = `/modules${guildId?`?guild_id=${guildId}`:''}`;
@@ -95,6 +96,27 @@ export const layout = (title, body, opts={}) => {
     .hero h1{ font-size: clamp(28px, 4.2vw, 44px); line-height:1.08; margin:0 0 10px }
     .hero p{ margin:0; color:#b4b8c3 }
     .hero-cta{ margin-top:18px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap }
+    /* Landing hero (Dyno-like) */
+    .landing-hero{ position:relative; padding:42px 0 18px; }
+    .landing-hero:before{
+      content:""; position:absolute; inset:-120px -40px auto -40px; height:420px;
+      background: radial-gradient(1200px 420px at 10% -120px, rgba(139,92,246,.20), rgba(139,92,246,0) 60%),
+                  radial-gradient(1200px 420px at 90% -160px, rgba(96,165,250,.18), rgba(96,165,250,0) 60%);
+      pointer-events:none; z-index:0; filter: blur(2px);
+    }
+    .hero-grid{ display:grid; grid-template-columns: 1.1fr 1fr; gap:24px; align-items:center; position:relative; z-index:1 }
+    @media(max-width:980px){ .hero-grid{ grid-template-columns:1fr; } }
+    .display-title{ font-weight:800; font-size: clamp(34px, 5.2vw, 64px); line-height:1.06; margin:0 0 12px; letter-spacing:.3px }
+    .hero-subtext{ color:#b4b8c3; font-size: clamp(14px, 2vw, 18px); margin:0 0 14px; max-width:640px }
+    .cta-row{ display:flex; gap:12px; flex-wrap:wrap; margin:12px 0 4px }
+    .hero-note{ margin-top:6px }
+    .device{ width:100%; max-width:620px; margin:0 auto; aspect-ratio: 16/10; border-radius:18px; background:#0e121a; border:1px solid rgba(255,255,255,.06); box-shadow:0 30px 60px -18px rgba(0,0,0,.6), 0 8px 30px -12px rgba(139,92,246,.22); padding:16px }
+    .device-screen{ width:100%; height:100%; border-radius:14px; background:#0a0d14; border:1px solid rgba(255,255,255,.05); padding:12px }
+    .device-ui{ display:flex; flex-direction:column; gap:12px; height:100% }
+    .ui-top{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px }
+    .ui-card{ height:58px; border-radius:10px; background:linear-gradient(180deg, rgba(139,92,246,.18), rgba(139,92,246,.06)); border:1px solid rgba(139,92,246,.28) }
+    .ui-grid{ display:grid; grid-template-columns: repeat(2, 1fr); grid-auto-rows: 80px; gap:10px; }
+    .ui-block{ border-radius:10px; background: rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.06) }
     .grid{ display:grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap:14px }
     .card{
       border:1px solid rgba(255,255,255,.06);
@@ -195,8 +217,8 @@ export const layout = (title, body, opts={}) => {
     ${guildId ? `<div class="wrap" style="padding-top:0;padding-bottom:10px"><div class="muted" style="font-size:12px">If reaction roles aren\'t working, re-invite with Manage Roles using <a href="${inviteHrefRec}">Recommended Invite</a> and move the bot\'s role above target roles.</div></div>` : ''}
   </header>
 
-  <div class="main-layout">
-  <aside class="sidebar">
+  <div class="main-layout" style="${hideSidebar ? 'display:block;min-height:unset;' : ''}">
+  ${hideSidebar ? '' : `<aside class="sidebar">
       <div class="sb-brand">⚒️<span style="margin-left:8px;font-weight:700">The Forge</span></div>
       <nav class="sb-nav">
   <a class="sb-item" data-target="/dashboard" href="${dashHref}"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="8" height="8" rx="2" fill="#8b5cf6"/></svg>Dashboard</a>
@@ -208,9 +230,9 @@ export const layout = (title, body, opts={}) => {
   <a class="sb-item" data-target="/servers" href="${guildId?`/dashboard/guild/${guildId}/listing`:'/servers'}"><svg viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="16" height="16" rx="2" stroke="#60a5fa" stroke-width="1.5"/></svg>Server Listing</a>
         <a class="sb-item" data-target="/logs" href="/logs"><svg viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h8" stroke="#f97316" stroke-width="1.5" stroke-linecap="round"/></svg>Logs</a>
       </nav>
-    </aside>
+    </aside>`}
 
-    <main class="content">
+    <main class="content" style="${hideSidebar ? 'max-width:1100px;margin:0 auto;padding-top:28px' : ''}">
       ${body}
     </main>
   </div>
@@ -230,18 +252,20 @@ export const layout = (title, body, opts={}) => {
     // highlight active sidebar item and toggle modules submenu
     (function(){
       try{
-        const path = window.location.pathname + (window.location.search||'');
-        document.querySelectorAll('.sb-item[data-target]').forEach(a=>{
-          const t = a.getAttribute('data-target');
-          if(path.indexOf(t)===0) a.classList.add('active');
-        });
-        // Modules submenu: auto-open on modules pages or when a guild is active; clicking the Modules link will navigate to the grid for the selected guild
-        const modBtn = document.querySelector('.sb-modules');
-        const modSub = document.getElementById('modules-sub');
-        if(modSub){
-          const onMods = path.startsWith('/modules');
-          const hasGuild = ${JSON.stringify(!!opts.guildId)};
-          modSub.style.display = (onMods || hasGuild) ? 'flex' : 'none';
+        if(!${JSON.stringify(!!hideSidebar)}){
+          const path = window.location.pathname + (window.location.search||'');
+          document.querySelectorAll('.sb-item[data-target]').forEach(a=>{
+            const t = a.getAttribute('data-target');
+            if(path.indexOf(t)===0) a.classList.add('active');
+          });
+          // Modules submenu: auto-open on modules pages or when a guild is active
+          const modBtn = document.querySelector('.sb-modules');
+          const modSub = document.getElementById('modules-sub');
+          if(modSub){
+            const onMods = path.startsWith('/modules');
+            const hasGuild = ${JSON.stringify(!!opts.guildId)};
+            modSub.style.display = (onMods || hasGuild) ? 'flex' : 'none';
+          }
         }
       }catch(e){}
     })();
