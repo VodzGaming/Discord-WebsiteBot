@@ -2,6 +2,7 @@ import { modulesList } from '../lib/modules.js';
 
 export const layout = (title, body, opts={}) => {
   const guildId = opts.guildId || '';
+  const loggedIn = !!opts.loggedIn;
   const modulesHtml = modulesList.map(m=>`<a class="sb-item" href="${guildId?m.href(guildId):'#'}">${m.name}</a>`).join('\n');
   const dashHref = `/dashboard${guildId?`?guild_id=${guildId}`:''}`;
   const modsHref = `/modules${guildId?`?guild_id=${guildId}`:''}`;
@@ -188,7 +189,7 @@ export const layout = (title, body, opts={}) => {
     <a class="btn-outline" href="/servers">Manage Servers</a>
   <a class="btn-outline" href="${inviteHref}" id="open-invite">Invite (Admin)</a>
   <a class="btn-outline" href="${inviteHrefRec}" id="open-invite-rec">Invite (Recommended)</a>
-        <a class="btn-outline" href="/logout">Log out</a>
+        ${loggedIn ? `<a class="btn-outline" href="/logout" id="nav-logout">Log out</a>` : `<a class="btn" href="/login" id="nav-login">Log in</a>`}
       </nav>
     </div>
     ${guildId ? `<div class="wrap" style="padding-top:0;padding-bottom:10px"><div class="muted" style="font-size:12px">If reaction roles aren\'t working, re-invite with Manage Roles using <a href="${inviteHrefRec}">Recommended Invite</a> and move the bot\'s role above target roles.</div></div>` : ''}
@@ -214,6 +215,18 @@ export const layout = (title, body, opts={}) => {
     </main>
   </div>
   <script>
+    // Ensure nav shows correct auth action even on pages that didn't pass loggedIn
+    (function(){
+      try{
+        var logged = ${JSON.stringify(!!opts.loggedIn)};
+        // Heuristic: pages under /dashboard, /servers, /modules, /logs, /commands require login
+        var p = (window.location.pathname||'');
+        if(!logged){ logged = /^\/(dashboard|servers|modules|logs|commands)(\b|\/)/.test(p); }
+        var login = document.getElementById('nav-login');
+        var logout = document.getElementById('nav-logout');
+        if(login && logout){ login.style.display = logged ? 'none' : ''; logout.style.display = logged ? '' : 'none'; }
+      }catch(e){}
+    })();
     // highlight active sidebar item and toggle modules submenu
     (function(){
       try{

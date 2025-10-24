@@ -853,6 +853,6 @@ export function renderWelcomeSettings({ guild, guildId, textChannels, settings, 
     </div>
   `;
 
-  return layout(title + ' — Welcome', body, { guildId });
+  return layout(title + ' — Welcome', body, { guildId, loggedIn: true });
 }
 

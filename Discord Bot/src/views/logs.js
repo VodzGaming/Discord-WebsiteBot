@@ -66,5 +66,5 @@ export const renderLogs = ({ logs=[], page=1, perPage=20, total=0, type=null, gu
       })();
     </script>
   `;
-  return layout('Logs', body);
+  return layout('Logs', body, { loggedIn: true });
 }

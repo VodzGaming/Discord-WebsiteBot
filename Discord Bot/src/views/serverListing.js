@@ -61,5 +61,5 @@ export function renderServerListing({ guild=null, guildId='' } = {}){
       </div>
     </div>
   `;
-  return layout('Server Listing Settings', body, { guildId });
+  return layout('Server Listing Settings', body, { guildId, loggedIn: true });
 }

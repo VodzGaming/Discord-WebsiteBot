@@ -50,5 +50,5 @@ export function renderServers({ user, manageable }){
       </div>
     </div>
   `;
-  return layout('Select a server', body);
+  return layout('Select a server', body, { loggedIn: !!user });
 }

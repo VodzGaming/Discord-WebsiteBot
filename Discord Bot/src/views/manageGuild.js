@@ -160,5 +160,5 @@ export function ManageGuild({ guild, textChannels, roleList, tracked, guildId, e
         });
       });
     </script>
-  `);
+  `, { loggedIn: true });
 }

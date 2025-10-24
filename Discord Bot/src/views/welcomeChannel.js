@@ -133,5 +133,5 @@ export function renderWelcomeChannel({ guild, guildId, textChannels, settings, s
     })();
   </script>`;
 
-  return layout(title + ' — Welcome Channel', body, { guildId });
+  return layout(title + ' — Welcome Channel', body, { guildId, loggedIn: true });
 }

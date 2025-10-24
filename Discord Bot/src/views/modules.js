@@ -231,5 +231,5 @@ export function renderModulesPage({ guildId, guild=null, cards=[] }={}){
     </script>
   `;
 
-  return layout('Modules', body, { guildId });
+  return layout('Modules', body, { guildId, loggedIn: true });
 }

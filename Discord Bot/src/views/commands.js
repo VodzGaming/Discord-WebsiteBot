@@ -10,5 +10,5 @@ export function renderCommands(){
       </div>
     </div>
   `;
-  return layout('Commands', body);
+  return layout('Commands', body, { loggedIn: true });
 }

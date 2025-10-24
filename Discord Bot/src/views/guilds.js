@@ -26,5 +26,5 @@ export function GuildList({ user, manageable, esc }){
       <p class="muted">Choose a server to open its dashboard.</p>
       <div class="grid">${cards}</div>
     </section>
-  `);
+  `, { loggedIn: true });
 }

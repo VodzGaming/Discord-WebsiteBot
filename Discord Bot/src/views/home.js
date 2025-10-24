@@ -6,7 +6,7 @@ export function renderHome({ loggedIn=false, username='' } = {}) {
       <h1>All‑in‑one Discord Assistant for Creators</h1>
       <p>Go‑Live alerts, Reaction Roles, Tickets and Music — managed from a clean web dashboard.</p>
       <div class="hero-cta">
-        <a class="btn primary" href="/dashboard">Open Dashboard</a>
+        ${loggedIn ? `<a class="btn primary" href="/dashboard">Open Dashboard</a>` : `<a class="btn primary" href="/login">Log in with Discord</a>`}
         <a class="btn-outline" href="/invite">Add to server</a>
       </div>
     </div>
@@ -23,5 +23,5 @@ export function renderHome({ loggedIn=false, username='' } = {}) {
     <div class="section muted">© ${new Date().getFullYear()} The Forge</div>
   `;
 
-  return layout('The Forge — Home', body);
+  return layout('The Forge — Home', body, { loggedIn });
 }

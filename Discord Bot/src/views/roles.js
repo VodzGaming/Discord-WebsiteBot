@@ -322,5 +322,5 @@ export function renderRolesPage({ guild, textChannels=[], roleList=[], menus=[],
     </script>
     
   `;
-  return layout('Reaction Roles — ' + gname, body, { guildId: guild?.id || '' });
+  return layout('Reaction Roles — ' + gname, body, { guildId: guild?.id || '', loggedIn: true });
 }

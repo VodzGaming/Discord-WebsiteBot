@@ -666,5 +666,5 @@ export function renderDashboard({ guild, cards=[], recentLogs=[], botSettings=nu
     </script>
   `;
 
-  return layout(title + ' — Dashboard', body, { guildId: guild?.id || '' });
+  return layout(title + ' — Dashboard', body, { guildId: guild?.id || '', loggedIn: true });
 }
